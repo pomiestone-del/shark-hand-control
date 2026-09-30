@@ -8,12 +8,15 @@ const byte MOUTH_PIN = 10;
 // Wider range, with direction reversed relative to the original mapping.
 const int HEAD_LEFT = 120;
 const int HEAD_RIGHT = 60;
-const int HEAD_CENTER = 90;
-const int MOUTH_HOLD_US = 1500;
+// Preserve Servo.write() endpoint pulses without rounding every command to degrees.
+const int HEAD_LEFT_US = MIN_PULSE_WIDTH + (long)(MAX_PULSE_WIDTH - MIN_PULSE_WIDTH) * HEAD_LEFT / 180;
+const int HEAD_RIGHT_US = MIN_PULSE_WIDTH + (long)(MAX_PULSE_WIDTH - MIN_PULSE_WIDTH) * HEAD_RIGHT / 180;
+const int MOUTH_CLOSED = 180;
+const int MOUTH_OPEN = 0;
+const int MOUTH_CLOSED_US = MIN_PULSE_WIDTH + (long)(MAX_PULSE_WIDTH - MIN_PULSE_WIDTH) * MOUTH_CLOSED / 180;
+const int MOUTH_OPEN_US = MIN_PULSE_WIDTH + (long)(MAX_PULSE_WIDTH - MIN_PULSE_WIDTH) * MOUTH_OPEN / 180;
 const unsigned long COMMAND_TIMEOUT_MS = 500;
 
-int currentAngle = HEAD_CENTER;
-int targetAngle = HEAD_CENTER;
 unsigned long lastCommand = 0;
 bool active = false;
 char command[12];
@@ -21,7 +24,6 @@ byte length = 0;
 bool overflow = false;
 
 void stopMotion() {
-  targetAngle = currentAngle;
   active = false;
 }
 
@@ -32,34 +34,44 @@ void processCommand() {
   } else if (strcmp(command, "S") == 0) {
     stopMotion();
     Serial.println(F("STOPPED"));
-  } else if (command[0] == 'H' && length >= 2 && length <= 5) {
+  } else if ((command[0] == 'H' || command[0] == 'M') && length >= 2 && length <= 5) {
     int position = 0;
     for (byte i = 1; i < length; ++i) {
       if (command[i] < '0' || command[i] > '9') return;
       position = position * 10 + command[i] - '0';
     }
     if (position > 1000) return;
-    targetAngle = map(position, 0, 1000, HEAD_LEFT, HEAD_RIGHT);
+    if (command[0] == 'M') {
+      int pulse = map(position, 0, 1000, MOUTH_CLOSED_US, MOUTH_OPEN_US);
+      mouth.writeMicroseconds(pulse);
+      if (!mouth.attached()) mouth.attach(MOUTH_PIN);
+      lastCommand = millis();
+      active = true;
+      Serial.print(F("MOK "));
+      Serial.print(MOUTH_CLOSED + (MOUTH_OPEN - MOUTH_CLOSED) * (position / 1000.0f), 2);
+      Serial.print(' ');
+      Serial.println(mouth.readMicroseconds());
+      return;
+    }
+    int targetPulse = map(position, 0, 1000, HEAD_LEFT_US, HEAD_RIGHT_US);
     if (!head.attached()) {
       // Start at the first hand command, never at an imposed center position.
-      currentAngle = targetAngle;
-      head.write(currentAngle);
+      head.writeMicroseconds(targetPulse);
       head.attach(HEAD_PIN);
     }
     // Apply the latest hand position directly; no software speed ramp.
-    currentAngle = targetAngle;
-    head.write(currentAngle);
+    head.writeMicroseconds(targetPulse);
     lastCommand = millis();
     active = true;
     Serial.print(F("OK "));
-    Serial.println(targetAngle);
+    Serial.print(HEAD_LEFT + (HEAD_RIGHT - HEAD_LEFT) * (position / 1000.0f), 2);
+    Serial.print(' ');
+    Serial.println(head.readMicroseconds()); // Commanded pulse, not physical feedback.
   }
 }
 
 void setup() {
-  // Leave head output disabled until the first valid hand command.
-  mouth.writeMicroseconds(MOUTH_HOLD_US);
-  mouth.attach(MOUTH_PIN);
+  // Leave both outputs disabled until valid hand commands arrive.
   Serial.begin(115200);
   Serial.println(F("SHARK_READY"));
 }
